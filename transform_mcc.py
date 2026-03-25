@@ -96,7 +96,7 @@ def transform_mcc():
         # Step B: create fresh table
         cursor.execute(f"""
             CREATE TABLE {SCHEMA_TARGET}.mcc_data (
-                code        INT PRIMARY KEY,
+                code        INT,
                 description VARCHAR(255),
                 notes       VARCHAR(100),
                 updated_by  VARCHAR(100)
