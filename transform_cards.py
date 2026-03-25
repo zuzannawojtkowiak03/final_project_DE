@@ -302,7 +302,7 @@ def transform_cards():
         for row in df_out.itertuples(index=False, name=None)
     ]
 
-    # ── Write to target schema ────────────────────────────────────────────
+    # Write to target schema
     # DROP committed separately to avoid duplicate-key errors from batched DDL.
     raw_conn = pyodbc.connect(conn_str, autocommit=False)
     try:
