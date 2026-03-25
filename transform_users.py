@@ -51,10 +51,6 @@ EDUCATION_ALIASES = {
     "doctorate":         "Doctorate",
 }
 
-# ─────────────────────────────────────────────
-# HELPER FUNCTIONS
-# ─────────────────────────────────────────────
-
 def _fuzzy_match(value: str, canonicals: list, cutoff: float = 0.65):
     """
     Case-insensitive fuzzy match via difflib.get_close_matches.
@@ -163,9 +159,7 @@ def normalize_address(raw):
     return re.sub(r"\s+", " ", str(raw).strip()).title()
 
 
-# ─────────────────────────────────────────────
 # MAIN TRANSFORM
-# ─────────────────────────────────────────────
 
 def transform_users():
     # SQLAlchemy engine – used for pd.read_sql (avoids UserWarning)
@@ -173,14 +167,14 @@ def transform_users():
         f"postgresql+psycopg2://postgres:{PASSWORD}@localhost:{PORT}/{DB_NAME}"
     )
 
-    # ── Read source data ─────────────────────────────────────────────────
+    # ── Read source data 
     with engine.connect() as sa_conn:
         df = pd.read_sql(
             f"SELECT * FROM {SCHEMA_SOURCE}.users_data",
             sa_conn,
         )
 
-    # ── 1. Monetary columns ──────────────────────────────────────────────
+    # ── 1. Monetary columns 
     # Handles: $symbol, commas, quoted strings, k-suffix, plain numbers
     for col in ["per_capita_income", "yearly_income", "total_debt"]:
         df[col] = df[col].apply(parse_money)
@@ -189,30 +183,30 @@ def transform_users():
     # set to 0 to flag them rather than fabricating a value
     df.loc[df["yearly_income"] < 100, "yearly_income"] = 0.0
 
-    # ── 2. Gender ────────────────────────────────────────────────────────
+    # ── 2. Gender 
     df["gender"] = df["gender"].str.strip().str.capitalize()
 
-    # ── 3. Employment status ─────────────────────────────────────────────
+    # ── 3. Employment status 
     # Handles: case variants, typos (Empl0yed), abbreviations (Ret.),
     #          spacing issues, alternate separators (Self Employed)
     df["employment_status"] = df["employment_status"].apply(normalize_employment)
 
-    # ── 4. Education level ───────────────────────────────────────────────
+    # ── 4. Education level 
     # Handles: ALL-CAPS, abbreviations (HS, Assoc Degree, MS/MA, BA/BS),
     #          merged words (Highschool), possessives (Bachelor's), extra spaces
     df["education_level"] = df["education_level"].apply(normalize_education)
 
-    # ── 5. Address ───────────────────────────────────────────────────────
+    # ── 5. Address 
     df["address"] = df["address"].apply(normalize_address)
 
-    # ── 6. Deduplicate on primary key (keep first occurrence) ────────────
+    # ── 6. Deduplicate on primary key (keep first occurrence) 
     before = len(df)
     df = df.drop_duplicates(subset=["id"], keep="first")
     dupes = before - len(df)
     if dupes:
         print(f"  Dropped {dupes} duplicate id row(s).")
 
-    # ── 7. Write to target schema ────────────────────────────────────────
+    # ── 7. Write to target schema 
     # Use a raw pyodbc connection so we can control autocommit and DDL order.
     # DROP + COMMIT first, then CREATE + INSERT + COMMIT — this guarantees
     # the old table is fully gone before the new one is created, preventing
@@ -228,7 +222,7 @@ def transform_users():
         # Step B: create fresh table
         cursor.execute(f"""
             CREATE TABLE {SCHEMA_TARGET}.users_data (
-                id                INT PRIMARY KEY,
+                id                INT,
                 current_age       INT,
                 retirement_age    INT,
                 birth_year        INT,
