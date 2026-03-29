@@ -1,123 +1,172 @@
-import pyodbc
+import psycopg2
 import pandas as pd
-from sqlalchemy import create_engine
+import io
 
-DRIVER_PATH   = '/opt/homebrew/lib/psqlodbcw.so'
-DB_NAME       = 'project'
-PASSWORD      = '563634851'
-PORT          = '1234'
-SCHEMA_SOURCE = 'ingestion'
-SCHEMA_TARGET = 'transformation'
+DB_NAME = "project"
+PASSWORD = "Password"
+PORT = "5432"
+HOST = "127.0.0.1"
+USER = "postgres"
 
-conn_str = (
-    f"DRIVER={{{DRIVER_PATH}}};SERVER=localhost;DATABASE={DB_NAME};"
-    f"UID=postgres;PWD={PASSWORD};PORT={PORT};"
-)
+SCHEMA_SOURCE = "ingestion"
+SCHEMA_TARGET = "transformation"
 
-def clean_code(value) -> str | None:
-    """
-    Normalises MCC code values:
-      "3000"   → 3000   (strip surrounding double-quotes)
-      MCC3066  → 3066   (strip leading MCC prefix, case-insensitive)
-      NOTE     → None   (non-numeric marker rows → dropped)
-      COMMENT  → None   (same)
-    Returns the cleaned numeric string, or None to signal row deletion.
-    """
+
+# Clean MCC codes and keep only valid numeric values
+def clean_code(value):
     if pd.isna(value):
         return None
+
     s = str(value).strip()
-    s = s.strip('"')                        # rule 1: remove surrounding quotes
-    s = s.strip("'")                        # also handle single-quotes just in case
-    if s.upper().startswith("MCC"):         # rule 2: remove MCC prefix
-        s = s[3:]
-    s = s.strip()
-    if not s.isnumeric():                   # rule 3: non-numeric → flag for deletion
+
+    if s in ["", "\\N"]:
         return None
-    return s                                # return as string; cast to int below
+
+    if s.upper().startswith("MCC"):
+        s = s[3:].strip()
+
+    s = s.strip('"').strip("'")
+
+    if s.upper() in ["NOTE", "COMMENT", "NAN", "\\N"]:
+        return None
+
+    try:
+        s = str(int(float(s)))
+    except ValueError:
+        return None
+
+    if not s.isdigit():
+        return None
+
+    return int(s)
 
 
-def clean_description(value) -> str | None:
-    """
-    Standardises description to Title Case.
-      STEEL PRODUCTS → Steel Products
-      steel drums    → Steel Drums
-    """
+# Clean and standardize descriptions
+def clean_description(value):
     if pd.isna(value):
         return None
-    return str(value).strip().title()
+
+    s = str(value).strip()
+
+    if s in ["", "\\N"]:
+        return None
+
+    s = " ".join(s.split())
+    return s.title()
 
 
-# MAIN TRANSFORM
+# Standardize note values
+def clean_notes(value):
+    if pd.isna(value):
+        return None
+
+    s = str(value).strip()
+
+    if s in ["", "\\N"]:
+        return None
+
+    notes_map = {
+        "legacy": "Legacy Data",
+        "check": "Needs Check",
+        "old_code": "Old Code"
+    }
+
+    return notes_map.get(s.lower(), s)
+
+
+# Clean names in the updated_by column
+def clean_updated_by(value):
+    if pd.isna(value):
+        return None
+
+    s = str(value).strip()
+
+    if s in ["", "\\N"]:
+        return None
+
+    s = s.replace("_", " ").replace("-", " ")
+
+    return s.title()
+
 
 def transform_mcc():
-    # ── Read source data via SQLAlchemy (avoids pandas UserWarning) 
-    engine = create_engine(
-        f"postgresql+psycopg2://postgres:{PASSWORD}@localhost:{PORT}/{DB_NAME}"
+    conn = psycopg2.connect(
+        host=HOST,
+        port=PORT,
+        database=DB_NAME,
+        user=USER,
+        password=PASSWORD
     )
-    with engine.connect() as sa_conn:
-        df = pd.read_sql(f"SELECT * FROM {SCHEMA_SOURCE}.mcc_data", sa_conn)
 
-    print(f"  Source rows: {len(df)}")
+    query = f'SELECT * FROM "{SCHEMA_SOURCE}"."mcc_data";'
+    df = pd.read_sql(query, conn)
+    conn.close()
 
-    # ── 1 & 2. Clean code column (strip quotes, strip MCC prefix) 
+    print(f"Source rows: {len(df)}")
+
+    # Apply cleaning steps
     df["code"] = df["code"].apply(clean_code)
+    df["code"] = pd.to_numeric(df["code"], errors="coerce").astype("Int64")
 
-    # ── 3. Drop NOTE / COMMENT rows (code is None after clean_code) 
-    non_data_mask = df["code"].isna()
-    if non_data_mask.any():
-        print(f"  Dropped {non_data_mask.sum()} non-data row(s) "
-              f"(NOTE / COMMENT / blank code).")
-    df = df[~non_data_mask].copy()
-
-    # Safe to cast to int now that all codes are numeric strings
-    df["code"] = df["code"].astype(int)
-
-    # ── 4. Title Case description 
     df["description"] = df["description"].apply(clean_description)
+    df["notes"] = df["notes"].apply(clean_notes)
+    df["updated_by"] = df["updated_by"].apply(clean_updated_by)
 
-    # ── 5. Deduplicate on code (keep first occurrence) 
-    before = len(df)
-    df = df.drop_duplicates(subset=["code"], keep="first").reset_index(drop=True)
-    dupes = before - len(df)
-    if dupes:
-        print(f"  Dropped {dupes} duplicate code row(s).")
+    # Keep only rows with valid MCC codes
+    df = df.dropna(subset=["code"]).copy()
 
-    print(f"  Clean rows to load: {len(df)}")
+    # Remove duplicate MCC codes
+    df = (
+        df.sort_values(by=["code"])
+          .drop_duplicates(subset=["code"], keep="first")
+          .reset_index(drop=True)
+    )
 
-    # Write to target schema
-    raw_conn = pyodbc.connect(conn_str, autocommit=False)
-    try:
-        cursor = raw_conn.cursor()
+    print(f"Clean rows to load: {len(df)}")
 
-        # Step A: drop and commit immediately so the table is truly gone
-        cursor.execute(f"DROP TABLE IF EXISTS {SCHEMA_TARGET}.mcc_data;")
-        raw_conn.commit()
+    conn = psycopg2.connect(
+        host=HOST,
+        port=PORT,
+        database=DB_NAME,
+        user=USER,
+        password=PASSWORD
+    )
+    cur = conn.cursor()
 
-        # Step B: create fresh table
-        cursor.execute(f"""
-            CREATE TABLE {SCHEMA_TARGET}.mcc_data (
-                code        INT,
-                description VARCHAR(255),
-                notes       VARCHAR(100),
-                updated_by  VARCHAR(100)
-            );
-        """)
+    cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA_TARGET}";')
+    cur.execute(f'DROP TABLE IF EXISTS "{SCHEMA_TARGET}"."mcc_data";')
 
-        # Step C: bulk insert
-        insert_sql = (
-            f"INSERT INTO {SCHEMA_TARGET}.mcc_data VALUES "
-            f"({','.join(['?'] * len(df.columns))})"
-        )
-        cursor.fast_executemany = True
-        cursor.executemany(insert_sql, [tuple(x) for x in df.values])
-        raw_conn.commit()
-        print(f"  MCC data transformed and loaded: {len(df)} rows.")
+    # Create the transformed table
+    cur.execute(f'''
+        CREATE TABLE "{SCHEMA_TARGET}"."mcc_data" (
+            code INT,
+            description VARCHAR(255),
+            notes VARCHAR(100),
+            updated_by VARCHAR(100)
+        );
+    ''')
 
-    except Exception:
-        raw_conn.rollback()
-        raise
-    finally:
-        raw_conn.close()
+    conn.commit()
+
+    buffer = io.StringIO()
+    df.to_csv(buffer, index=False, header=False, na_rep="")
+    buffer.seek(0)
+
+    # Load cleaned data into PostgreSQL
+    cur.copy_expert(
+        sql=f'''
+            COPY "{SCHEMA_TARGET}"."mcc_data"
+            (code, description, notes, updated_by)
+            FROM STDIN WITH CSV
+        ''',
+        file=buffer
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    print("transformation.mcc_data loaded successfully")
 
 
 if __name__ == "__main__":
