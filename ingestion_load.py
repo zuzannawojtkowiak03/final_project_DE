@@ -23,7 +23,6 @@ def table_name_from_file(filename: str) -> str:
 
 
 def load_all():
-    # FIX: all logic is inside a function, not at module level
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     conn = psycopg2.connect(host=HOST, port=PORT, database=DB_NAME, user=USER, password=PASSWORD)
     cursor = conn.cursor()
