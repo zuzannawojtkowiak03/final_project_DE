@@ -5,10 +5,11 @@ import psycopg2
 from difflib import get_close_matches
 
 DB_NAME = "project"
-PASSWORD = "KochamEmila2506!"
+PASSWORD = "Password"
 PORT = "5432"
 HOST = "127.0.0.1"
 USER = "postgres"
+
 SCHEMA_SOURCE = "ingestion"
 SCHEMA_TARGET = "transformation"
 
