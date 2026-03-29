@@ -14,7 +14,7 @@ def create_database():
         conn = psycopg2.connect(
             host=HOST,
             port=PORT,
-            database="postgres",   # connect first to default postgres db
+            database="postgres",
             user=USER,
             password=PASSWORD
         )
