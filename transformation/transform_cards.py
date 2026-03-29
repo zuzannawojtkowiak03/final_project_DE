@@ -4,7 +4,7 @@ import re
 import psycopg2
 
 DB_NAME = "project"
-PASSWORD = "KochamEmila2506!"
+PASSWORD = "Password"
 PORT = "5432"
 HOST = "127.0.0.1"
 USER = "postgres"
